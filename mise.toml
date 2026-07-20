@@ -1,0 +1,9 @@
+[tools]
+helm = "3.16.4"
+helmfile = "0.169.1"
+kubectl = "1.36.2"
+sops = "3.9.4"
+age = "1.2.1"
+
+[env]
+KUBECONFIG = "/Users/dhlee/Workspace/00_ENV/k8s/homelab.kubeconfig"

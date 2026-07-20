@@ -1,0 +1,30 @@
+# Template for a k8s deployment target. Copy to environments/<env>.yaml (gitignored
+# or kept in a private fork) and edit for your cluster.
+#
+# <env> is the name you choose (e.g. dev, lab, staging). It must match:
+#   - homelab-infra:  mise run platform:up --env <env>
+#   - helmfile (direct):  helmfile -e <env> …
+#   - data-platform:  --env <env>
+#   - MinIO bucket:  s3a://<env>  (data-platform warehouse convention)
+
+env: dev
+
+cluster:
+  storageClass: local-path   # k3s default; use your CSI / StorageClass name
+
+ingress:
+  # Pattern for public HTTP hosts. {{ .Release }} is the chart/release name.
+  # Use your domain, or rely on port-forward / NodePort if you have no ingress.
+  hostSuffix: dev.example.com
+  # Example: release "airflow" → airflow.dev.example.com
+
+minio:
+  bucket: dev                # must equal `env` (see data-platform datasets docs)
+
+sizing:
+  # Tune for your node. Rough MVP baseline on a ~27 GiB node:
+  #   platform + observability ~2.5 GiB always-on
+  #   data idle ~4–5 GiB, spark operator ~0.2 GiB + jobs
+  data:
+    minioPvc: 100Gi
+    postgresStorage: 20Gi

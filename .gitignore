@@ -1,0 +1,25 @@
+# IDE
+.cursor
+.vscode
+.idea
+.claude
+
+# Local workspace (plans, backups, todos — not published)
+work/
+
+# Secrets — never commit plaintext
+**/*.dec.yaml
+**/*.dec.yml
+**/values-secret.yaml
+**/secrets.yaml
+**/secret.yaml
+.env
+.env.*
+!.env.example
+
+# age private keys (public recipients live in .sops.yaml)
+**/keys.txt
+
+# Per-operator / per-cluster env values (template stays: environments/example.yaml)
+environments/*.yaml
+!environments/example.yaml
