@@ -1,0 +1,19 @@
+# Strimzi Kafka operator — controller in platform, Kafka clusters in stream.
+#
+# watchNamespaces makes the chart create a RoleBinding in each listed namespace, so
+# adding a namespace here means reapplying this release, not just the workload.
+
+watchNamespaces:
+  - stream
+watchAnyNamespace: false
+
+# Chart defaults, restated so the platform quota is easy to reason about. This is a
+# JVM process and the requested 384Mi is close to its floor — lowering it trades
+# reconcile latency for very little memory.
+resources:
+  requests:
+    cpu: 200m
+    memory: 384Mi
+  limits:
+    cpu: "1"
+    memory: 384Mi

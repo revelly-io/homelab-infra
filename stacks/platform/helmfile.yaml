@@ -1,0 +1,130 @@
+environments:
+  homelab:
+    values:
+      - ../../environments/homelab.yaml
+  default:
+    values:
+      - ../../environments/example.yaml
+
+---
+
+# Tier 0. Ingress, namespace policy, and every operator in the cluster.
+#
+# Operators live here rather than beside the workloads they serve. A controller and
+# its custom resources have different lifecycles: the CRDs must exist before any CR
+# does, toggling an operator orphans live CRs and invites version skew on
+# reinstall, and the whole set costs roughly 1 GiB — cheap next to the data planes
+# that toggling is actually meant to reclaim.
+#
+# Declared per stack, not in the root helmfile: sub-helmfiles do not inherit
+# helmDefaults from the parent.
+#
+# wait: true is what makes `needs:` mean "ready", not merely "installed".
+# timeout is generous because this stack pulls five operator images at once and the
+# link is slow — measured 3-7 minutes per image on first install. At 600 helm gave
+# up while the pulls were still running and marked healthy releases as failed.
+helmDefaults:
+  createNamespace: false
+  wait: true
+  timeout: 1200
+  atomic: true
+
+# Namespaces must exist before the quotas and limits that live inside them, and all
+# three before any release installs. `kubectl apply -f` honours the given order.
+#
+repositories:
+  - name: jetstack
+    url: https://charts.jetstack.io
+  - name: traefik
+    url: https://traefik.github.io/charts
+  - name: cnpg
+    url: https://cloudnative-pg.github.io/charts
+  - name: spark-operator
+    url: https://kubeflow.github.io/spark-operator
+  - name: strimzi
+    url: https://strimzi.io/charts/
+  # Apache serves the Flink operator chart from a per-version path, so the repo URL
+  # carries the version and must be bumped together with the release below.
+  - name: flink-operator
+    url: https://downloads.apache.org/flink/flink-kubernetes-operator-1.15.0/
+
+releases:
+  # First: operator webhooks need its CRDs to exist before they install.
+  - name: cert-manager
+    namespace: platform
+    chart: jetstack/cert-manager
+    version: v1.21.0
+    atomic: false
+    values:
+      - values/cert-manager.yaml
+    # Namespaces must exist before the quotas and limits inside them, and all three
+    # before any release installs — `createNamespace: false` means helm will not
+    # make them. `kubectl apply -f` honours the given order.
+    #
+    # Attached to the first release rather than the state file's own `hooks:`.
+    # Top-level hooks only fire `prepare` and `cleanup` reliably; `prepare` also
+    # runs during `helmfile template`, so the supposedly offline check was creating
+    # namespaces in the cluster, and moving it to a top-level `presync` stopped it
+    # running at all.
+    #
+    # Paths are relative to this file: helmfile runs hook commands with the working
+    # directory set to the directory of the helmfile being processed.
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: kubectl
+        args:
+          - apply
+          - -f
+          - manifests/namespaces.yaml
+          - -f
+          - manifests/resource-quotas.yaml
+          - -f
+          - manifests/limit-ranges.yaml
+
+  - name: traefik
+    namespace: platform
+    chart: traefik/traefik
+    version: 41.0.2
+    values:
+      - values/traefik.yaml
+
+  # atomic is disabled on every CRD-owning release below. An atomic rollback on a
+  # timeout deletes the CRDs, and deleting a CRD cascades to every object defined by
+  # it — a failed cnpg upgrade would take core's PostgreSQL with it, a failed
+  # Strimzi upgrade would take the Kafka cluster.
+  - name: cnpg
+    namespace: platform
+    chart: cnpg/cloudnative-pg
+    version: 0.29.0
+    atomic: false
+    values:
+      - values/cnpg.yaml
+
+  - name: spark-operator
+    namespace: platform
+    chart: spark-operator/spark-operator
+    version: 2.5.1
+    atomic: false
+    values:
+      - values/spark-operator.yaml
+
+  - name: strimzi
+    namespace: platform
+    chart: strimzi/strimzi-kafka-operator
+    version: 1.1.0
+    atomic: false
+    values:
+      - values/strimzi.yaml
+
+  # Its webhook Certificate and Issuer are cert-manager kinds, so the CRDs have to
+  # be in the cluster before this renders server-side.
+  - name: flink-operator
+    namespace: platform
+    chart: flink-operator/flink-kubernetes-operator
+    version: 1.15.0
+    atomic: false
+    needs:
+      - cert-manager
+    values:
+      - values/flink-operator.yaml

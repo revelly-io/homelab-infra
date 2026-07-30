@@ -1,0 +1,18 @@
+# CloudNative-PG operator — cluster-wide, runs in platform namespace.
+
+config:
+  clusterWide: true
+
+crds:
+  create: true
+
+monitoring:
+  podMonitorEnabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

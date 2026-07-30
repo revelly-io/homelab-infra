@@ -1,0 +1,45 @@
+# One namespace per domain. Folders under stacks/ do not map 1:1 to these — the
+# platform stack owns `platform` and creates all of them.
+#
+# Tier 0: platform, observability   — always on
+# Tier 1: core                      — always on, holds state
+# Tier 2: the rest                  — toggled by profile
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: core
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: orchestration
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: compute
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stream
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: governance

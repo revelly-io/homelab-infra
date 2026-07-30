@@ -1,0 +1,35 @@
+# Flink Kubernetes operator — controller in platform, FlinkDeployments in stream.
+#
+# The chart repository URL in helmfile.yaml is version-specific (Apache publishes
+# each release under its own path), so bump both together.
+
+watchNamespaces:
+  - stream
+
+# The webhook validates FlinkDeployment specs at admission time. The chart has no
+# cert-manager toggle — with create: true it emits a cert-manager Certificate and a
+# self-signed Issuer unconditionally, which is why cert-manager is a release in this
+# stack and this one `needs:` it.
+#
+# `helmfile template` does not catch a missing cert-manager: rendering succeeds and
+# only the apply fails, with "no matches for kind Certificate in version
+# cert-manager.io/v1".
+webhook:
+  create: true
+
+operatorPod:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  webhook:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi

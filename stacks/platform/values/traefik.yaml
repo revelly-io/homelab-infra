@@ -1,0 +1,39 @@
+# Ingress controller (k3s built-in Traefik disabled at install).
+
+deployment:
+  replicas: 1
+
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+  name: traefik
+
+providers:
+  kubernetesCRD:
+    enabled: true
+  kubernetesIngress:
+    enabled: true
+    ingressClass: traefik
+
+ports:
+  web:
+    exposedPort: 80
+  websecure:
+    exposedPort: 443
+    http:
+      tls:
+        enabled: false
+
+service:
+  type: ClusterIP
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+log:
+  level: INFO

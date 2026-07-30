@@ -1,0 +1,50 @@
+# cert-manager exists here for one reason: operator admission webhooks need a TLS
+# certificate, and several charts assume cert-manager is present to issue it. The
+# Flink operator has no toggle at all — with webhook.create: true it emits a
+# Certificate and an Issuer unconditionally, and the install fails without the CRDs.
+#
+# It is NOT here for ingress TLS. Every ingress in this repo runs tls.enabled: false;
+# certificates terminate at the Cloudflare edge. See work/decisions/domains-and-tls.md.
+#
+# Nothing else to configure: charts that want a certificate ship their own
+# self-signed Issuer, so no ClusterIssuer is defined here.
+
+crds:
+  # v1.15+ renamed this from installCRDs. Keeping the CRDs in the release means a
+  # `platform:down` removes them, which is correct — they belong to this stack.
+  enabled: true
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+webhook:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 64Mi
+
+cainjector:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Prometheus is scraped by VictoriaMetrics; enable once the observability stack
+# lands and the VM CRDs exist.
+prometheus:
+  enabled: false

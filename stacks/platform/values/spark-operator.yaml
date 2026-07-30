@@ -1,0 +1,47 @@
+# Spark operator — controller runs in platform, jobs run in compute.
+#
+# spark.jobNamespaces also drives RBAC: with serviceAccount.create and rbac.create
+# the chart provisions the driver ServiceAccount ("spark-operator-spark") and its
+# Role/RoleBinding inside each listed namespace. The compute stack therefore does
+# not declare driver RBAC of its own — it only submits SparkApplications.
+
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+webhook:
+  enable: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+spark:
+  jobNamespaces:
+    - compute
+  serviceAccount:
+    create: true
+  rbac:
+    create: true
+
+prometheus:
+  metrics:
+    enable: true
+  # Enable once the observability stack lands and the VM CRDs exist.
+  podMonitor:
+    create: false
+
+# cert-manager is deliberately absent from this cluster; the chart falls back to a
+# self-signed certificate for the webhook.
+certManager:
+  enable: false

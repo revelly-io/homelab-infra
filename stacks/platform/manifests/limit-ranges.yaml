@@ -1,0 +1,135 @@
+# LimitRange — required companion to resource-quotas.yaml.
+#
+# A ResourceQuota that sets requests.cpu/requests.memory forces EVERY container in
+# the namespace to declare requests, and a quota on limits.memory forces every
+# container to declare limits. Pods that declare neither are rejected outright.
+#
+# Our own values files set resources, but charts also create pods we do not
+# control: MinIO's bucket-creation job, Airflow's run-airflow-migrations job, and
+# above all the task pods the KubernetesExecutor spawns at runtime. Without these
+# defaults those pods never schedule.
+#
+# defaultRequest is deliberately small so incidental jobs barely consume quota.
+# default (the limit) is 1Gi: high enough that a chart declaring requests without
+# limits still yields limit >= request, low enough that a runaway container cannot
+# eat a whole namespace's quota. A container requesting more than 1Gi without also
+# setting its own limit would be rejected — none of our charts do that.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: observability
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: core
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: orchestration
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: compute
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: stream
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: ml
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: stack-defaults
+  namespace: governance
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      default:
+        cpu: 500m
+        memory: 1Gi

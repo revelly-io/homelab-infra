@@ -1,0 +1,97 @@
+# Hard caps on a ~27 GiB node — tune after kubectl top.
+#
+# Tier 0 and tier 1 are sized to what actually stays resident. Tier 2 quotas are
+# deliberately generous: only one or two profiles are up at a time, so their sums
+# exceed the node on purpose.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: platform
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.memory: 4Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: observability
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 3Gi
+    limits.memory: 6Gi
+---
+# MinIO + PostgreSQL + Polaris. Smaller than the old `data` quota because Airflow
+# moved out to orchestration.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: core
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 6Gi
+    limits.memory: 10Gi
+---
+# Airflow control plane plus the task pods KubernetesExecutor spawns here.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: orchestration
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.memory: 8Gi
+---
+# Spark drivers and executors share this with Trino workers.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: compute
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 12Gi
+    limits.memory: 20Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: stream
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.memory: 8Gi
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: ml
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.memory: 8Gi
+---
+# OpenMetadata drags OpenSearch along, so this is the heaviest tier-2 namespace.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: stack-quota
+  namespace: governance
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 6Gi
+    limits.memory: 10Gi
