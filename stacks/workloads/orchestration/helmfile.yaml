@@ -1,0 +1,42 @@
+environments:
+  homelab:
+    values:
+      - ../../../environments/homelab.yaml
+  default:
+    values:
+      - ../../../environments/example.yaml
+
+---
+
+# Tier 2 — toggle. Airflow only; MinIO, PostgreSQL and Polaris come from the core
+# stack and must already be up.
+#
+# Credentials (postgres-app, minio-root, airflow-admin) are created in this
+# namespace by `mise run secrets:sync`, which orchestration:up runs first. No copy
+# hook, no cross-namespace plumbing — the source of truth is .env.
+#
+# The timeout is longer than platform's because Airflow pulls large images and runs
+# a database migration job before it reports ready.
+helmDefaults:
+  createNamespace: false
+  wait: true
+  timeout: 1800
+  atomic: true
+
+repositories:
+  - name: apache-airflow
+    url: https://airflow.apache.org
+
+releases:
+  - name: airflow
+    namespace: orchestration
+    chart: apache-airflow/airflow
+    version: 1.22.0
+    labels:
+      # Helmfile allows one value per label key, so profile membership is expressed
+      # as boolean keys rather than `profile: batch`. Select with `-l batch=true`.
+      tier: "2"
+      batch: "true"
+      mlops: "true"
+    values:
+      - values/airflow.yaml.gotmpl

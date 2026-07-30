@@ -1,0 +1,227 @@
+executor: KubernetesExecutor
+
+postgresql:
+  enabled: false
+
+redis:
+  enabled: false
+
+# postgres-app, minio-root and airflow-admin are created in this namespace by
+# `mise run secrets:sync` from .env. Nothing here knows a password — the values
+# below reference the Secrets by name only.
+#
+# Airflow fernet/api keys: chart generates its own on first install.
+#
+# metadataSecretName points at postgres-app purely to stop the chart building a
+# metadata secret of its own. The chart only reads that secret's `connection` key
+# when the two built-in env vars below are enabled, and they are not — the secret
+# has `username`/`password`, not a ready-made URI.
+data:
+  metadataSecretName: postgres-app
+
+enableBuiltInSecretEnvVars:
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: false
+  AIRFLOW_CONN_AIRFLOW_DB: false
+
+# Loads the Secrets as env vars: username/password from postgres-app,
+# rootUser/rootPassword from minio-root.
+extraEnvFrom: |
+  - secretRef:
+      name: postgres-app
+  - secretRef:
+      name: minio-root
+
+# The connection URIs are assembled at container start from the secret env vars, so
+# no password lands in a rendered manifest. python does the percent-encoding —
+# passwords can contain characters that would otherwise break the URI.
+extraEnv: |
+  - name: AIRFLOW__CORE__LOAD_EXAMPLES
+    value: "False"
+  - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD
+    value: >-
+      python -c "import os, urllib.parse as u; print('postgresql+psycopg2://%s:%s@{{ .Values.endpoints.postgres }}:{{ .Values.endpoints.postgresPort }}/airflow?sslmode=disable' % (u.quote(os.environ['username']), u.quote(os.environ['password'])), end='')"
+  - name: AIRFLOW_CONN_AIRFLOW_DB_CMD
+    value: >-
+      python -c "import os, urllib.parse as u; print('postgresql+psycopg2://%s:%s@{{ .Values.endpoints.postgres }}:{{ .Values.endpoints.postgresPort }}/airflow?sslmode=disable' % (u.quote(os.environ['username']), u.quote(os.environ['password'])), end='')"
+  - name: AIRFLOW_CONN_MINIO_LOGS_CMD
+    value: >-
+      python -c "import os, urllib.parse as u; print('aws://%s:%s@?endpoint_url={{ .Values.endpoints.minioApi }}' % (u.quote(os.environ['rootUser']), u.quote(os.environ['rootPassword'])), end='')"
+
+config:
+  logging:
+    remote_logging: "True"
+    # Logs go to the -logs bucket, never the warehouse: that bucket carries the
+    # quota and the expiry rule that keep runaway task logs from filling the PVC.
+    remote_base_log_folder: s3://{{ .Values.minio.logsBucket }}/airflow
+    remote_log_conn_id: minio_logs
+  kubernetes:
+    # KubernetesExecutor task pods land here, next to the control plane, so the
+    # orchestration ResourceQuota bounds them.
+    namespace: orchestration
+  # TODO: raise min_file_process_interval well above its 30s default — DAG parsing
+  # churn is the usual cause of scheduler memory growth. The section moved between
+  # Airflow 2 ([scheduler]) and 3 ([dag_processor]); confirm against the version
+  # this chart pulls before setting it, or it is silently ignored.
+
+# Every container without explicit resources is handed the namespace LimitRange
+# default of 1Gi. Airflow pods carry two or three sidecars each, so the defaults
+# alone pushed the namespace past its 8Gi quota and the triggerer StatefulSet was
+# refused outright: "exceeded quota, requested 2560Mi, used 6656Mi".
+#
+# Log groomers trim local log files. Logs go to S3, so there is nothing local to
+# groom — turning them off removes a 1Gi-by-default container from four pods.
+# The per-component settings live in the resource blocks further down.
+#
+# statsd forwards Airflow metrics in statsd format. Nothing scrapes it — the
+# observability stack will read Airflow's own Prometheus endpoint instead.
+statsd:
+  enabled: false
+
+# useHelmHooks: false is required with helmDefaults.wait: true, and the failure is
+# a deadlock rather than an error. As a post-install hook the migration job only
+# runs after helm finishes waiting for the Deployments, but every Deployment has a
+# wait-for-airflow-migrations init container — so helm waits for pods that are
+# waiting for a job helm has not started. Nothing appears in the namespace except
+# init containers backing off, and the release eventually times out.
+#
+# As plain resources both jobs are applied alongside everything else and run
+# immediately.
+migrateDatabaseJob:
+  useHelmHooks: false
+
+# The admin account. The chart default is admin/admin, baked straight into the job
+# args and thus into the rendered manifest. Instead the username and password come
+# from the airflow-admin Secret (secrets:sync, from .env) as env vars, and the args
+# are overridden to read them — so no credential appears in the manifest and admin
+# is whatever .env says, not admin/admin.
+#
+# This is the account exposed through the Cloudflare tunnel, so it is the one that
+# actually matters.
+createUserJob:
+  useHelmHooks: false
+  env:
+    - name: AIRFLOW_ADMIN_USERNAME
+      valueFrom:
+        secretKeyRef: { name: airflow-admin, key: username }
+    - name: AIRFLOW_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef: { name: airflow-admin, key: password }
+    - name: AIRFLOW_VIEWER_USERNAME
+      valueFrom:
+        secretKeyRef: { name: airflow-viewer, key: username }
+    - name: AIRFLOW_VIEWER_PASSWORD
+      valueFrom:
+        secretKeyRef: { name: airflow-viewer, key: password }
+  # Two accounts, both from Secrets, both idempotent: create on first run, reset the
+  # password on later runs so a changed .env takes effect. Admin is full access;
+  # Viewer is read-only (view DAGs, runs, logs — no trigger, edit or delete) and is
+  # the account meant to be shared for the public demo.
+  args:
+    - bash
+    - -c
+    - |-
+      set -eu
+      upsert() {  # role user pass email
+        airflow users create --role "$1" --username "$2" --password "$3" \
+          --email "$4" --firstname "$2" --lastname user 2>/dev/null \
+        || airflow users reset-password --username "$2" --password "$3"
+      }
+      upsert Admin  "$AIRFLOW_ADMIN_USERNAME"  "$AIRFLOW_ADMIN_PASSWORD"  admin@revelly.io
+      upsert Viewer "$AIRFLOW_VIEWER_USERNAME" "$AIRFLOW_VIEWER_PASSWORD" viewer@revelly.io
+
+dags:
+  persistence:
+    enabled: false
+  gitSync:
+    enabled: true
+    # Explicit, so the sidecar does not inherit the LimitRange 1Gi default. It
+    # shallow-clones one branch on a timer; this is generous for that.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    repo: {{ .Values.airflow.gitSync.repo | quote }}
+    branch: {{ .Values.airflow.gitSync.branch | quote }}
+    {{- if .Values.airflow.gitSync.subPath }}
+    subPath: {{ .Values.airflow.gitSync.subPath | quote }}
+    {{- end }}
+    depth: 1
+    wait: 60
+    period: 60s
+
+logs:
+  persistence:
+    enabled: false
+
+ingress:
+  apiServer:
+    enabled: true
+    ingressClassName: {{ .Values.ingress.className | quote }}
+    hosts:
+      - name: {{ .Values.domains.airflow | quote }}
+        tls:
+          enabled: false
+    tls:
+      enabled: false
+
+scheduler:
+  logGroomerSidecar:
+    enabled: false
+  resources:
+    requests:
+      cpu: 300m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+triggerer:
+  logGroomerSidecar:
+    enabled: false
+  # No PVC. Remote logging leaves the triggerer no local logs worth keeping, and
+  # the chart otherwise provisions a volume that sat Pending on this single node.
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+dagProcessor:
+  logGroomerSidecar:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+apiServer:
+  resources:
+    requests:
+      cpu: 300m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+workers:
+  logGroomerSidecar:
+    enabled: false
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
