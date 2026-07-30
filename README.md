@@ -1,6 +1,6 @@
 # homelab-infra
 
-Helmfile-managed k8s stacks for a data platform (MinIO, PostgreSQL, Polaris, Airflow, Spark operator). Toggle stacks with mise — `de:up`, `spark:down`, etc.
+Helmfile-managed k8s stacks for a data platform (MinIO, PostgreSQL, Polaris, Airflow, Spark, Trino, Kafka). An always-on base stays up; workload stacks toggle with mise — `core:up`, `orchestration:down`, etc.
 
 Workloads (DAGs, Spark apps, dbt) live in [data-platform](https://github.com/revelly-io/data-platform). **This repo is cluster infrastructure only.**
 
@@ -17,13 +17,13 @@ Designed for a single-node k3s cluster (~27 GiB allocatable). Traefik is disable
 
 ```bash
 mise trust
-mise install   # helm, helmfile, kubectl, sops, age
+mise install   # helm, helmfile, kubectl, jq
 export KUBECONFIG=/path/to/your/kubeconfig
 cp environments/example.yaml environments/homelab.yaml   # pick any name
 # edit environments/homelab.yaml for your cluster
 ```
 
-Helmfile, stack charts, mise deploy tasks (`platform:up`, `bootstrap`, …), and SOPS wiring are **not in the repo yet** (MVP in progress). The env model and layout below are the target contract — deploy commands will work once those land.
+The `platform` and `core` stacks, the root helmfile and the mise tasks are in the repo. `observability` and the remaining `workloads/*` stacks are not yet — see [stacks.md](docs/architecture/stacks.md) for what exists today.
 
 ## `--env` ties both repos together
 
@@ -31,14 +31,14 @@ Pick one name (`homelab`, `dev`, `lab`, …). Use the same string everywhere:
 
 | | |
 |--|--|
-| homelab-infra | `environments/<env>.yaml`, `mise run de:up --env <env>` → `helmfile -e <env>` |
+| homelab-infra | `environments/<env>.yaml`, `mise run core:up --env <env>` → `helmfile -e <env>` |
 | data-platform | `--env <env>`, `spark_app/config/<env>/`, `.env.<env>` |
-| MinIO | bucket name = `<env>` → data-platform warehouse `s3a://<env>` |
+| MinIO | `minio.warehouseBucket` → data-platform warehouse `s3a://<name>`; `logsBucket` and `artifactsBucket` created alongside |
 
 Example (`homelab`):
 
 ```
-mise run de:up --env homelab          (homelab-infra)
+mise run core:up --env homelab        (homelab-infra)
         │
         ├─► helmfile -e homelab
         │       └─► environments/homelab.yaml
@@ -66,25 +66,36 @@ Edit `environments/<env>.yaml` — at minimum `env`, `cluster.storageClass`, `in
 
 Private env files are gitignored; only `example.yaml` is committed.
 
-### 3. Secrets (SOPS + age)
+### 3. Credentials
+
+Passwords live in `.env` (gitignored) — nothing is committed, no encryption key to keep. `mise run secrets:sync` turns `.env` into Kubernetes Secrets that the charts read by name; `core:up` and `orchestration:up` run it first.
 
 ```bash
-age-keygen -o ~/.config/sops/age/keys.txt
+cp .env.example .env      # then fill in the passwords
 ```
 
-`.sops.yaml` and `stacks/*/secrets.sops.yaml` arrive with MVP. Each operator uses their own age key unless you share recipients.
+| Secret | Set from `.env` | Namespaces | Used by |
+|--------|-----------------|------------|---------|
+| `postgres-app` | `POSTGRES_APP_PASSWORD` (user fixed to `app`) | `core`, `orchestration` | Polaris, Airflow, later MLflow |
+| `minio-root` | `MINIO_ROOT_USER` / `_PASSWORD` | `core`, `orchestration` | MinIO, Airflow (remote logs) |
+| `airflow-admin` / `airflow-viewer` | `AIRFLOW_ADMIN_*` / `AIRFLOW_VIEWER_*` | `orchestration` | Airflow web UI (admin + read-only) |
 
-### 4. Deploy stacks *(after MVP)*
+The true PostgreSQL superuser (`postgres`) keeps a random CNPG-generated password, separate from `.env`. Read any secret with `mise run secrets:show <name>` (add `-n <namespace>` if not `core`).
+
+Changing a password: edit `.env`, `mise run secrets:sync`, then re-run the consuming stack's `:up`. PostgreSQL is the exception — its role password is only set at first bootstrap, so `core:down` then `core:up` is needed.
+
+### 4. Deploy stacks
 
 ```bash
 mise run bootstrap
-mise run platform:up --env homelab
-mise run obs:up --env homelab
-mise run de:up --env homelab
-mise run spark:up --env homelab
+mise run platform:up --env homelab        # always on — quotas, Traefik, operators
+mise run core:up --env homelab            # always on — MinIO, PostgreSQL, Polaris
+mise run orchestration:up --env homelab   # toggled — Airflow
 ```
 
-Bring-up order, tear-down, `--purge`, deps, and memory: [docs/architecture/stacks.md](docs/architecture/stacks.md).
+`mise tasks ls` lists what exists. Stacks that are designed but not written yet have no task.
+
+Tiers, profiles, tear-down, `--purge`, deps, and memory: [docs/architecture/stacks.md](docs/architecture/stacks.md).
 
 ### 5. Wire data-platform *(after MVP)*
 
@@ -103,11 +114,15 @@ homelab-infra/
 ├── mise.toml
 ├── helmfile.yaml                 # (MVP)
 ├── environments/example.yaml
-├── stacks/{platform,observability,data,spark,…}/
+├── stacks/
+│   ├── platform/                 # always on — ingress, quotas, every operator
+│   ├── observability/            # always on
+│   ├── core/                     # always on — MinIO, PostgreSQL, Polaris
+│   └── workloads/{orchestration,compute,stream,ml,governance}/   # toggled
 └── docs/architecture/stacks.md
 ```
 
-Each stack folder: `helmfile.yaml`, `values/`, `manifests/`, `secrets.sops.yaml`.
+Each stack folder: `helmfile.yaml`, `values/`, `manifests/`.
 
 ## Related
 
