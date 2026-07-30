@@ -1,0 +1,39 @@
+# Apache Polaris — JDBC persistence on CNPG. Address comes from
+# environments/<env>.yaml `endpoints.postgres`, not hardcoded here.
+# Credentials come from the operator-managed postgres-app secret (username/password keys).
+
+replicaCount: 1
+
+image:
+  pullPolicy: IfNotPresent
+
+persistence:
+  type: relational-jdbc
+
+extraEnv:
+  - name: QUARKUS_DATASOURCE_JDBC_URL
+    value: jdbc:postgresql://{{ .Values.endpoints.postgres }}:{{ .Values.endpoints.postgresPort }}/polaris
+  - name: QUARKUS_DATASOURCE_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: postgres-app
+        key: username
+  - name: QUARKUS_DATASOURCE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: postgres-app
+        key: password
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+ingress:
+  enabled: false
+
+service:
+  type: ClusterIP

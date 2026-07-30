@@ -1,0 +1,81 @@
+environments:
+  homelab:
+    values:
+      - ../../environments/homelab.yaml
+  default:
+    values:
+      - ../../environments/example.yaml
+
+---
+
+# Tier 1 — state. MinIO, PostgreSQL, Polaris. This stack is never toggled: a
+# destroy here loses the lakehouse. Engines and UIs that read it live in
+# stacks/workloads/ and toggle freely.
+#
+# Credentials come from the postgres-app and minio-root Secrets that
+# `mise run secrets:sync` builds from .env; the charts adopt them by name. No
+# password is declared here or anywhere in the repo.
+#
+# helmDefaults is declared per stack: sub-helmfiles do not inherit it from the root.
+# wait: true is what makes `needs:` mean "ready", not merely "installed" — without
+# it Polaris would start against a PostgreSQL that has not accepted connections yet.
+helmDefaults:
+  createNamespace: false
+  wait: true
+  timeout: 1200
+  atomic: true
+
+repositories:
+  - name: minio
+    url: https://charts.min.io/
+  - name: polaris
+    url: https://downloads.apache.org/polaris/helm-chart
+  - name: cnpg
+    url: https://cloudnative-pg.github.io/charts
+
+releases:
+  - name: minio
+    namespace: core
+    chart: minio/minio
+    version: 5.4.0
+    values:
+      - values/minio.yaml.gotmpl
+
+  - name: postgres
+    namespace: core
+    chart: cnpg/cluster
+    version: 0.8.0
+    values:
+      - values/postgres.yaml.gotmpl
+    needs:
+      - minio
+    # `wait: true` does nothing for this release. It creates a single CNPG `Cluster`
+    # custom resource, and helm's --wait only watches Deployments, StatefulSets and
+    # Pods the release itself owns — there are none. helm returns in about two
+    # seconds while the operator takes minutes to provision the instance, so
+    # `needs: postgres` on a downstream release means "the CR exists", not "the
+    # database accepts connections". Polaris crash-looped on JDBC errors until
+    # PostgreSQL caught up.
+    #
+    # Waiting on the CR's own Ready condition is what makes `needs:` mean what it
+    # reads like. Anything else fronted by an operator needs the same treatment.
+    hooks:
+      - events: ["postsync"]
+        showlogs: true
+        command: kubectl
+        args:
+          - wait
+          - --for=condition=Ready
+          - cluster/postgres
+          - -n
+          - core
+          - --timeout=900s
+
+  - name: polaris
+    namespace: core
+    chart: polaris/polaris
+    version: 1.6.0
+    values:
+      - values/polaris.yaml.gotmpl
+    needs:
+      - postgres

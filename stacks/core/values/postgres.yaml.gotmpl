@@ -1,0 +1,60 @@
+# CNPG cluster chart (cnpg/cluster) — see environments/<env>.yaml for databases list.
+#
+# Service address is declared once in environments/<env>.yaml as
+# `endpoints.postgres`; consumers read it from there.
+#
+# fullnameOverride: postgres → the operator generates:
+#   Secret "postgres-app"       (username, password, host, port, dbname, uri, …)
+#   Secret "postgres-superuser" (username, password)
+#
+# No password is set here or anywhere else in this repo. Consumers outside `core`
+# copy postgres-app into their own namespace at deploy time — Secrets do not cross
+# namespaces, and copying beats owning credentials we would then have to encrypt,
+# back up and rotate.
+
+fullnameOverride: postgres
+
+type: postgresql
+mode: standalone
+
+version:
+  postgresql: "16"
+
+cluster:
+  instances: 1
+  enableSuperuserAccess: true
+  enablePDB: false
+  storage:
+    size: {{ .Values.sizing.core.postgresStorage | quote }}
+    storageClass: {{ .Values.cluster.storageClass | quote }}
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  initdb:
+    database: app
+    owner: app
+    # Adopt the `postgres-app` Secret that `mise run secrets:sync` builds from .env,
+    # rather than letting CNPG generate a random password. Key path is `secret.name`
+    # — `secretName` belongs to pgBaseBackup and is silently ignored here. Because
+    # initdb only runs on first bootstrap, changing this on a live cluster does
+    # nothing; that is why the password change is done by recreating core.
+    secret:
+      name: postgres-app
+
+  # No declarative `roles:` on purpose. Everything shares the `app` user, whose
+  # password now comes from .env via the secret above.
+  roles: []
+
+backups:
+  enabled: false
+
+databases:
+{{- range .Values.postgres.databases }}
+  - name: {{ . | quote }}
+    owner: app
+    ensure: present
+{{- end }}

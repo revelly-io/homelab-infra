@@ -1,0 +1,77 @@
+mode: standalone
+replicas: 1
+
+# Root credentials come from the `minio-root` Secret that `mise run secrets:sync`
+# builds from .env. existingSecret means the chart reads its rootUser/rootPassword
+# keys instead of generating a password of its own, so the value is owned in .env
+# and never appears in a rendered manifest.
+existingSecret: minio-root
+
+# Buckets are split by lifecycle, not by data layer. raw/refined/mart stay prefixes
+# inside the warehouse — Iceberg handles those.
+#
+# The split exists because MinIO quotas and ILM rules are per-bucket. On one PVC
+# with no backup, runaway task logs would otherwise fill the disk, MinIO would go
+# read-only, and the warehouse would stop accepting writes with it. A prefix cannot
+# be capped; a bucket can.
+#
+# versioning stays off everywhere: Iceberg tracks its own snapshots, and bucket
+# versioning would duplicate storage and confuse expiry.
+buckets:
+  # Warehouse. data-platform points `datasets.warehouse` at this one.
+  - name: {{ .Values.minio.warehouseBucket | quote }}
+    policy: none
+    purge: false
+    versioning: false
+
+  # Churn. Airflow task logs, Spark event logs. Wants a short expiry.
+  - name: {{ .Values.minio.logsBucket | quote }}
+    policy: none
+    purge: false
+    versioning: false
+
+  # MLflow artifacts, Kubeflow Pipelines intermediates. Medium value, medium churn.
+  - name: {{ .Values.minio.artifactsBucket | quote }}
+    policy: none
+    purge: false
+    versioning: false
+
+# Quotas and expiry rules are NOT set here. The chart can run post-install `mc`
+# commands via customCommands, but a failing command fails the job and atomic: true
+# then rolls the release back. Verify the syntax against this chart's mcImage
+# first, then move these in:
+#
+#   mc quota set    myminio/{{ .Values.minio.logsBucket }} --size 30gi
+#   mc quota set    myminio/{{ .Values.minio.artifactsBucket }} --size 100gi
+#   mc ilm rule add myminio/{{ .Values.minio.logsBucket }} --expire-days 14
+#
+# The warehouse deliberately gets no quota: it should be the thing that gets the
+# disk, and the caps above are what stop the others from taking it.
+customCommands: []
+
+persistence:
+  enabled: true
+  storageClass: {{ .Values.cluster.storageClass | quote }}
+  size: {{ .Values.sizing.core.minioPvc | quote }}
+
+ingress:
+  enabled: true
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  hosts:
+    - {{ .Values.domains.minioApi | quote }}
+  tls: []
+
+consoleIngress:
+  enabled: true
+  ingressClassName: {{ .Values.ingress.className | quote }}
+  hosts:
+    - {{ .Values.domains.minioConsole | quote }}
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
