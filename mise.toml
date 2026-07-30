@@ -1,9 +1,286 @@
 [tools]
-helm = "3.16.4"
-helmfile = "0.169.1"
+# Helm 4 + helmfile 1.x. Greenfield cluster, so there is no reason to start a
+# generation behind. helmfile 1.x added explicit Helm 4 support (#2262) and has
+# tracked it since.
+helm = "4.2.3"
+helmfile = "1.7.1"
 kubectl = "1.36.2"
-sops = "3.9.4"
-age = "1.2.1"
+# Used by `secrets:show` to decode Secret data.
+jq = "1.7.1"
+
+# Credentials live in .env (gitignored) and enter the cluster only through
+# `mise run secrets:sync`, which writes Secrets the charts read by name. Nothing in
+# the repo is a password — see .env.example.
 
 [env]
 KUBECONFIG = "/Users/dhlee/Workspace/00_ENV/k8s/homelab.kubeconfig"
+
+# Every deploy task takes `--env <name>`, matching data-platform's `--env` flag.
+# It maps to `helmfile -e <name>`, which selects environments/<name>.yaml.
+# Defaults to "homelab" so day-to-day use needs no flag.
+#
+# Tiers (see docs/architecture/stacks.md):
+#   0  platform, observability  — always on, owns every CRD
+#   1  core                     — always on, holds state
+#   2  workloads/*              — toggled
+#
+# Only stacks that exist have tasks. `observability`, `compute`, `stream`, `ml`
+# and `governance` are designed but not written yet; each gets its up/down pair
+# when its helmfile lands, and the demo profiles that compose them follow after.
+# Tasks are not written ahead of the stacks they drive — placeholders that only
+# print "not implemented" are more code to read than the thing they stand in for.
+
+[tasks.bootstrap]
+description = "Install the helm plugins helmfile needs (diff)"
+# Presence in `helm plugin list` is not proof a plugin works: a failed install
+# leaves the directory and plugin.yaml behind with no binary, and helmfile then
+# dies mid-apply with "fork/exec ...: no such file or directory". Probe each
+# plugin by running it, and reinstall from scratch when the probe fails.
+run = '''
+set -u
+ensure_plugin() {
+  name="$1"; url="$2"; probe="$3"
+  if helm "$probe" --help >/dev/null 2>&1; then
+    echo "helm plugin '$name' ok"
+    return
+  fi
+  echo "helm plugin '$name' missing or broken — reinstalling"
+  helm plugin uninstall "$name" >/dev/null 2>&1 || true
+  helm plugin install "$url" --verify=false
+}
+# --verify=false is required for helm-diff on Helm 4: Helm 4 verifies remote
+# plugin provenance by default and helm-diff does not publish provenance artifacts.
+ensure_plugin diff https://github.com/databus23/helm-diff diff
+helm plugin list
+'''
+
+# ── tier 0 (always on) ────────────────────────────────────────────────────────
+
+[tasks."platform:up"]
+description = "Apply the platform stack (namespaces, quotas, Traefik, cert-manager, all operators)"
+usage = 'flag "-e --env <env>" help="helmfile environment (default: homelab)"'
+# cert-manager goes first, on its own. `needs:` only orders the sync, but helmfile
+# diffs every release up front — and the Flink operator's manifest contains
+# cert-manager kinds, so its diff fails with "no matches for kind Certificate"
+# until those CRDs are actually in the cluster. Any release that supplies CRDs
+# another release references has to land before the main pass.
+run = '''
+set -eu
+env="${usage_env:-homelab}"
+f=stacks/platform/helmfile.yaml
+helmfile -f "$f" -e "$env" -l name=cert-manager apply
+helmfile -f "$f" -e "$env" apply
+'''
+
+[tasks."platform:down"]
+description = "Destroy the platform stack. This removes every operator CRD in the cluster"
+usage = '''
+flag "-e --env <env>" help="helmfile environment (default: homelab)"
+flag "--purge" help="Also delete the platform namespace"
+'''
+# Deliberately not part of all:down. Removing these CRDs cascades to every custom
+# resource defined by them — SparkApplications, Kafka clusters, CNPG Clusters.
+run = '''
+helmfile -f stacks/platform/helmfile.yaml -e "${usage_env:-homelab}" destroy
+if [ "${usage_purge:-}" = "true" ]; then
+  kubectl delete namespace platform --ignore-not-found
+fi
+'''
+
+# ── tier 1 (always on — state) ────────────────────────────────────────────────
+
+[tasks."core:up"]
+description = "Apply the core stack (MinIO, PostgreSQL, Polaris)"
+usage = 'flag "-e --env <env>" help="helmfile environment (default: homelab)"'
+# secrets:sync first: CNPG and MinIO adopt Secrets that must exist before the
+# charts install, so this is not optional ordering.
+run = '''
+set -eu
+mise run secrets:sync
+helmfile -f stacks/core/helmfile.yaml -e "${usage_env:-homelab}" apply
+'''
+
+[tasks."core:down"]
+description = "Destroy the core stack. --purge also deletes the namespace and the lakehouse"
+usage = '''
+flag "-e --env <env>" help="helmfile environment (default: homelab)"
+flag "--purge" help="Also delete the core namespace — this destroys MinIO objects and the PostgreSQL PVC"
+'''
+# Not part of all:down. core holds every byte in the lakehouse and nothing in this
+# repo backs it up.
+run = '''
+helmfile -f stacks/core/helmfile.yaml -e "${usage_env:-homelab}" destroy
+if [ "${usage_purge:-}" = "true" ]; then
+  kubectl delete namespace core --ignore-not-found
+fi
+'''
+
+# ── tier 2 (toggle) ───────────────────────────────────────────────────────────
+
+[tasks."orchestration:up"]
+description = "Apply the orchestration stack (Airflow). Needs core:up first"
+usage = 'flag "-e --env <env>" help="helmfile environment (default: homelab)"'
+# secrets:sync creates postgres-app, minio-root and airflow-admin in this namespace
+# before Airflow installs.
+run = '''
+set -eu
+mise run secrets:sync
+helmfile -f stacks/workloads/orchestration/helmfile.yaml -e "${usage_env:-homelab}" apply
+'''
+
+[tasks."orchestration:down"]
+description = "Destroy the orchestration stack"
+usage = '''
+flag "-e --env <env>" help="helmfile environment (default: homelab)"
+flag "--purge" help="Also delete the orchestration namespace"
+'''
+run = '''
+helmfile -f stacks/workloads/orchestration/helmfile.yaml -e "${usage_env:-homelab}" destroy
+if [ "${usage_purge:-}" = "true" ]; then
+  kubectl delete namespace orchestration --ignore-not-found
+fi
+'''
+
+# ── cross-stack ───────────────────────────────────────────────────────────────
+
+[tasks."all:down"]
+description = "Destroy every tier-2 stack in reverse dependency order. Tier 0 and core stay up"
+usage = '''
+flag "-e --env <env>" help="helmfile environment (default: homelab)"
+flag "--purge" help="Also delete each tier-2 namespace"
+'''
+# The list is the teardown order for the full design; stacks that have no helmfile
+# yet are skipped, so this needs no edit as they land. Calls helmfile directly
+# rather than the per-stack tasks for the same reason.
+#
+# Tier 2 only, on purpose. `core` holds the lakehouse and `platform` owns every CRD
+# in the cluster; both have their own explicit :down.
+run = '''
+set -eu
+env="${usage_env:-homelab}"
+for stack in governance ml stream orchestration compute; do
+  f="stacks/workloads/$stack/helmfile.yaml"
+  [ -f "$f" ] || continue
+  echo "── $stack"
+  helmfile -f "$f" -e "$env" destroy
+  if [ "${usage_purge:-}" = "true" ]; then
+    kubectl delete namespace "$stack" --ignore-not-found
+  fi
+done
+'''
+
+[tasks.diff]
+description = "Show what would change across all stacks, without applying"
+usage = 'flag "-e --env <env>" help="helmfile environment (default: homelab)"'
+run = 'helmfile -f helmfile.yaml -e "${usage_env:-homelab}" diff'
+
+[tasks.drift]
+description = "Detect drift — exits non-zero when the cluster no longer matches the repo"
+usage = 'flag "-e --env <env>" help="helmfile environment (default: homelab)"'
+# There is no reconcile controller here by design, so nothing reports drift on its
+# own. --detailed-exitcode makes this usable from a cron job or a pre-apply check.
+run = 'helmfile -f helmfile.yaml -e "${usage_env:-homelab}" diff --detailed-exitcode'
+
+[tasks.template]
+description = "Render every stack locally — catches chart and values errors with no cluster"
+usage = 'flag "-e --env <env>" help="helmfile environment (default: homelab)"'
+# No --skip-deps: that flag also skips the `helm repo add` implied by each stack's
+# `repositories:`, so a repo this machine has never seen fails with
+# "repo <name> not found". Correctness beats the few seconds it saves.
+run = 'helmfile -f helmfile.yaml -e "${usage_env:-homelab}" template'
+
+[tasks."secrets:sync"]
+description = "Create cluster Secrets from .env (run before core:up / orchestration:up)"
+# The one place credentials enter the cluster. Reads .env — never committed — and
+# writes Secrets the charts adopt by name: CNPG via initdb.secret.name, MinIO via
+# existingSecret, Airflow's create-user job via env. Nothing here is in a manifest,
+# so a password never lands in git or in rendered YAML.
+#
+# `kubectl apply` (not `create`) so re-running updates in place. Idempotent, which
+# is why core:up and orchestration:up can call it unconditionally.
+#
+# Namespaces come from the platform stack; if they are missing, run platform:up.
+run = '''
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+[ -f .env ] || { echo "no .env — copy .env.example to .env and fill it in" >&2; exit 1; }
+set -a; . ./.env; set +a
+
+: "${POSTGRES_APP_PASSWORD:?set in .env}"
+: "${MINIO_ROOT_USER:?set in .env}"         "${MINIO_ROOT_PASSWORD:?set in .env}"
+: "${AIRFLOW_ADMIN_USERNAME:?set in .env}"  "${AIRFLOW_ADMIN_PASSWORD:?set in .env}"
+: "${AIRFLOW_VIEWER_USERNAME:?set in .env}" "${AIRFLOW_VIEWER_PASSWORD:?set in .env}"
+
+# The PostgreSQL username is fixed infrastructure, not a secret: it has to equal the
+# database owner CNPG creates (initdb.owner: app in stacks/core/values). Hardcoded
+# here so it cannot drift from that and leave consumers authenticating as a role
+# that does not exist.
+POSTGRES_APP_USER=app
+
+# apply, not delete-then-create. Deleting core/postgres-app races the CNPG operator,
+# which owns it and recreates it within a second, so create fails "already exists".
+# apply updates data in place and is safe to re-run.
+#
+# The `type` must match what already exists — a Secret's type is immutable, so
+# applying Opaque over a basic-auth secret is rejected. postgres-app is basic-auth
+# everywhere for exactly that reason.
+sync_secret() {  # ns name secret-type key=val...
+  ns="$1"; name="$2"; stype="$3"; shift 3
+  kubectl get namespace "$ns" >/dev/null 2>&1 || {
+    echo "namespace '$ns' missing — run 'mise run platform:up' first" >&2; exit 1; }
+  args=""
+  for kv in "$@"; do args="$args --from-literal=$kv"; done
+  kubectl create secret generic "$name" -n "$ns" --type="$stype" $args \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  echo "  $ns/$name"
+}
+
+for ns in core orchestration; do
+  # PostgreSQL app user. CNPG's initdb.secret.name requires a basic-auth secret with
+  # username/password keys; consumers read the same two keys.
+  sync_secret "$ns" postgres-app kubernetes.io/basic-auth \
+    "username=$POSTGRES_APP_USER" "password=$POSTGRES_APP_PASSWORD"
+
+  # MinIO root. The chart's existingSecret reads keys rootUser/rootPassword.
+  sync_secret "$ns" minio-root Opaque \
+    "rootUser=$MINIO_ROOT_USER" "rootPassword=$MINIO_ROOT_PASSWORD"
+done
+
+# Airflow web UI accounts — only needed where Airflow runs.
+sync_secret orchestration airflow-admin Opaque \
+  "username=$AIRFLOW_ADMIN_USERNAME" "password=$AIRFLOW_ADMIN_PASSWORD"
+sync_secret orchestration airflow-viewer Opaque \
+  "username=$AIRFLOW_VIEWER_USERNAME" "password=$AIRFLOW_VIEWER_PASSWORD"
+
+echo "synced."
+'''
+
+[tasks."secrets:show"]
+description = "Print the credentials in a cluster Secret (they live only in the cluster)"
+usage = '''
+arg "<name>" help="secret name, e.g. postgres-app, minio-root, airflow-admin"
+flag "-n --namespace <namespace>" help="namespace holding the secret (default: core)"
+'''
+# jq, not `-o go-template`. mise renders task scripts as templates first, so a
+# go-template's {{ }} is eaten before kubectl ever runs — it fails with
+# "Unexpected character" and looks like a missing secret.
+run = '''
+kubectl get secret "${usage_name}" -n "${usage_namespace:-core}" -o json \
+  | jq -r '.data | to_entries[] | "\(.key): \(.value|@base64d)"'
+'''
+
+[tasks.status]
+description = "Show helm releases, pods, quota usage and node memory"
+run = '''
+echo "── releases ─────────────────────────────────────────"
+helm list -A
+echo
+echo "── pods ─────────────────────────────────────────────"
+kubectl get pods -A --sort-by=.metadata.namespace
+echo
+echo "── quota ────────────────────────────────────────────"
+kubectl get resourcequota -A
+echo
+echo "── node ─────────────────────────────────────────────"
+kubectl top node
+'''

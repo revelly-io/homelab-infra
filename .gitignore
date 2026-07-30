@@ -20,6 +20,6 @@ work/
 # age private keys (public recipients live in .sops.yaml)
 **/keys.txt
 
-# Per-operator / per-cluster env values (template stays: environments/example.yaml)
+# Per-operator env values (template stays: environments/example.yaml)
 environments/*.yaml
 !environments/example.yaml

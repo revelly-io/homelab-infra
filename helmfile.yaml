@@ -1,0 +1,31 @@
+# Bundle for whole-repo operations: `helmfile diff` and `helmfile template`.
+#
+# NOTE: helmDefaults deliberately does not live here. Sub-helmfiles listed under
+# `helmfiles:` are independent state files and do NOT inherit the parent's
+# helmDefaults, so defaults set at this level are silently ignored. Each stack
+# declares its own — see stacks/**/helmfile.yaml.
+#
+# `needs:` is likewise scoped to a single state file. The entries below run in the
+# order listed with no dependency graph between them, so real bring-up ordering
+# lives in the mise tasks, not here. Do not `helmfile apply` this file expecting
+# tier ordering — use `mise run platform:up`, then `obs:up`, then `core:up`.
+
+# helmfile 1.x requires `environments` to sit in its own YAML document, separated
+# by `---` from the rest. This replaced v0's "double rendering" workaround.
+environments:
+  homelab:
+    values:
+      - environments/homelab.yaml
+  default:
+    values:
+      - environments/example.yaml
+
+---
+
+helmfiles:
+  # Tier 0
+  - path: stacks/platform/helmfile.yaml
+  # Tier 1
+  - path: stacks/core/helmfile.yaml
+  # Tier 2 — listed as they are implemented
+  - path: stacks/workloads/orchestration/helmfile.yaml

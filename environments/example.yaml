@@ -1,30 +1,63 @@
 # Template for a k8s deployment target. Copy to environments/<env>.yaml (gitignored
 # or kept in a private fork) and edit for your cluster.
 #
-# <env> is the name you choose (e.g. dev, lab, staging). It must match:
-#   - homelab-infra:  mise run platform:up --env <env>
-#   - helmfile (direct):  helmfile -e <env> …
-#   - data-platform:  --env <env>
-#   - MinIO bucket:  s3a://<env>  (data-platform warehouse convention)
+# Everything here is a fact about one cluster. How a fact gets wired into a chart
+# belongs in stacks/*/values/, not here.
+#
+# <env> must match data-platform --env.
 
 env: dev
 
 cluster:
-  storageClass: local-path   # k3s default; use your CSI / StorageClass name
+  storageClass: local-path
 
 ingress:
-  # Pattern for public HTTP hosts. {{ .Release }} is the chart/release name.
-  # Use your domain, or rely on port-forward / NodePort if you have no ingress.
+  className: traefik
   hostSuffix: dev.example.com
-  # Example: release "airflow" → airflow.dev.example.com
 
+# External hostnames, reached through the ingress.
+domains:
+  airflow: airflow-dev.example.com
+  minioApi: minio-dev.example.com
+  minioConsole: minio-console-dev.example.com
+
+# In-cluster addresses. Fixed by the stack layout — namespace `core`, and
+# `fullnameOverride: postgres` in the CNPG values. Listed here so no values file
+# hardcodes them: the same address is needed by Polaris, Airflow and later MLflow,
+# and three copies of a string is three chances to miss one when it changes.
+endpoints:
+  postgres: postgres-rw.core.svc.cluster.local
+  postgresPort: 5432
+  minioApi: http://minio.core.svc.cluster.local:9000
+
+# Three buckets, split by lifecycle so log churn cannot fill the disk out from
+# under the warehouse. Named in full rather than derived from one prefix — the
+# suffix rule would otherwise be repeated in every values file that references a
+# bucket, and a one-sided edit fails silently at runtime.
+#
+# warehouse must match data-platform's `datasets.warehouse` (s3a://<name>).
 minio:
-  bucket: dev                # must equal `env` (see data-platform datasets docs)
+  warehouseBucket: dev
+  logsBucket: dev-logs
+  artifactsBucket: dev-artifacts
 
 sizing:
-  # Tune for your node. Rough MVP baseline on a ~27 GiB node:
-  #   platform + observability ~2.5 GiB always-on
-  #   data idle ~4–5 GiB, spark operator ~0.2 GiB + jobs
-  data:
+  core:
     minioPvc: 100Gi
     postgresStorage: 20Gi
+
+airflow:
+  gitSync:
+    repo: https://github.com/revelly-io/data-platform.git
+    branch: main
+    subPath: ""
+
+# One CNPG cluster in `core` serves every stack. Databases are declared up front so
+# bringing up a tier-2 stack never requires touching core again.
+postgres:
+  databases:
+    - polaris
+    - airflow
+    - mlflow
+    - superset
+    - openmetadata
