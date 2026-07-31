@@ -1,130 +1,130 @@
 # homelab-infra
 
-Helmfile-managed k8s stacks for a data platform (MinIO, PostgreSQL, Polaris, Airflow, Spark, Trino, Kafka). An always-on base stays up; workload stacks toggle with mise — `core:up`, `orchestration:down`, etc.
+A single-node Kubernetes data platform, managed as declarative Helmfile stacks that toggle by lifecycle tier. The whole cluster — object store, catalog, orchestration, compute, streaming, ML — fits inside a **27 GiB homelab node** by keeping a small base always on and switching heavier workloads on and off with one command.
 
-Workloads (DAGs, Spark apps, dbt) live in [data-platform](https://github.com/revelly-io/data-platform). **This repo is cluster infrastructure only.**
+Built as a portfolio piece for ML platform engineering: the interesting part is not the tool list but the decisions that make a production-shaped stack fit on one machine and stay reproducible.
 
-Designed for a single-node k3s cluster (~27 GiB allocatable). Traefik is disabled at k3s install; ingress comes from the platform stack.
+## Highlights
 
-## Two ways to run
+- **Lifecycle tiers, not one big deploy.** A resident base (ingress, operators, object store, catalog, PostgreSQL) stays up; workload engines toggle. `mise run up --stack compute`, `mise run down --stack compute` — memory returns to the node when a workload is off.
+- **The repo is the source of truth.** Every chart version is pinned, and `mise run diff` shows any divergence between the repo and the cluster. No hidden `kubectl apply` history.
+- **Operators separated from their workloads.** CNPG, Spark, Strimzi and Flink operators live once in the always-on base; the custom resources they manage (Kafka clusters, SparkApplications) come and go with the toggled stacks. Toggling an operator would orphan live CRs — so it never toggles.
+- **Secrets never touch git.** Passwords live in a gitignored `.env`; `mise run secrets:sync` turns them into Kubernetes Secrets the charts adopt by name. Nothing in the repo, and nothing in a rendered manifest, is a credential.
+- **Resource-budgeted by design.** Every release declares requests/limits and every namespace has a ResourceQuota, because on 27 GiB a runaway Spark executor cannot be allowed to starve the control plane.
 
-| Goal | Repo | How |
-|------|------|-----|
-| Spark + Iceberg on your **Mac** (Docker, no k8s) | [data-platform](https://github.com/revelly-io/data-platform) | `mise run infra:up`, then `--env local` |
-| Full stack on **your k8s cluster** | homelab-infra + data-platform | steps below; same `--env` name in both repos |
+## Architecture at a glance
 
-## What works today
+Stacks are grouped by lifecycle. Operators live once in the base; their custom resources toggle with the workload stacks.
+
+```mermaid
+flowchart TB
+    subgraph T0["Tier 0 · platform + observability — always on"]
+        direction LR
+        ING["Traefik · cert-manager"]
+        OPS["operators<br/>CNPG · Spark · Strimzi · Flink"]
+        OBS["VictoriaMetrics · Grafana"]
+    end
+    subgraph T1["Tier 1 · core — always on (state)"]
+        direction LR
+        MINIO["MinIO<br/>object store"]
+        PG["PostgreSQL<br/>(CNPG)"]
+        POL["Polaris<br/>Iceberg catalog"]
+    end
+    subgraph T2["Tier 2 · workloads — toggled"]
+        direction LR
+        ORCH["orchestration<br/>Airflow"]
+        COMP["compute<br/>Spark · Trino"]
+        STRM["stream<br/>Kafka · Flink"]
+        ML["ml<br/>MLflow · KFP"]
+        GOV["governance<br/>OpenMetadata · Superset"]
+    end
+    T0 --> T1 --> T2
+
+    classDef on fill:#e8f4ea,stroke:#2e7d32,color:#1b5e20;
+    classDef toggle fill:#eef2f8,stroke:#5472a3,color:#243b63,stroke-dasharray:4 3;
+    class T0,T1 on
+    class T2 toggle
+```
+
+A batch pipeline exercises the whole stack: Airflow orchestrates a Spark job that writes an Iceberg table to MinIO, registers it in Polaris, and Trino queries it back.
+
+```mermaid
+flowchart LR
+    AF["Airflow<br/><i>orchestration</i>"] -->|submits| SP["SparkApplication<br/><i>compute</i>"]
+    SP -->|writes Iceberg| S3["MinIO<br/><i>core</i>"]
+    SP -->|registers table| POL["Polaris<br/><i>core</i>"]
+    TR["Trino<br/><i>compute</i>"] -->|reads catalog| POL
+    TR -->|reads data| S3
+```
+
+Tiers, namespaces, profiles, the memory budget and where-to-put-something rules: [docs/architecture/stacks.md](docs/architecture/stacks.md).
+
+## Stacks
+
+| Stack                     | Tier | Contents                                                   | Status  |
+| ------------------------- | ---- | ---------------------------------------------------------- | ------- |
+| `platform`                | 0    | Traefik, cert-manager, namespaces + quotas, every operator | ✅      |
+| `observability`           | 0    | VictoriaMetrics k8s-stack, Grafana, VictoriaLogs           | planned |
+| `core`                    | 1    | MinIO, PostgreSQL (CNPG), Polaris                          | ✅      |
+| `workloads/orchestration` | 2    | Airflow                                                    | ✅      |
+| `workloads/compute`       | 2    | Spark, Trino                                               | planned |
+| `workloads/stream`        | 2    | Kafka, Flink, kafka-ui                                     | planned |
+| `workloads/ml`            | 2    | MLflow, Kubeflow Pipelines                                 | planned |
+| `workloads/governance`    | 2    | OpenMetadata, Superset                                     | planned |
+
+`mise run status` lists what is actually deployed; a stack gets its folder when it lands.
+
+## Run it on your own cluster
+
+Bring your own Kubernetes (k3s, k3d, kind, bare metal). Nothing cluster-specific is committed — you need `kubectl` access via a kubeconfig. k3s with `--disable traefik` is recommended, since Traefik comes from the platform stack.
 
 ```bash
 mise trust
-mise install   # helm, helmfile, kubectl, jq
+mise install                 # helm, helmfile, kubectl, jq
+mise run bootstrap           # helm-diff plugin
 export KUBECONFIG=/path/to/your/kubeconfig
-cp environments/example.yaml environments/homelab.yaml   # pick any name
-# edit environments/homelab.yaml for your cluster
+
+cp environments/example.yaml environments/homelab.yaml   # pick any env name
+cp .env.example .env                                     # fill in the passwords
+$EDITOR environments/homelab.yaml .env
 ```
 
-The `platform` and `core` stacks, the root helmfile and the mise tasks are in the repo. `observability` and the remaining `workloads/*` stacks are not yet — see [stacks.md](docs/architecture/stacks.md) for what exists today.
+`environments/<env>.yaml` holds everything cluster-specific — storage class, ingress host suffix, MinIO bucket names, endpoints, and per-stack sizing. See [environments/example.yaml](environments/example.yaml).
 
-## `--env` ties both repos together
-
-Pick one name (`homelab`, `dev`, `lab`, …). Use the same string everywhere:
-
-| | |
-|--|--|
-| homelab-infra | `environments/<env>.yaml`, `mise run core:up --env <env>` → `helmfile -e <env>` |
-| data-platform | `--env <env>`, `spark_app/config/<env>/`, `.env.<env>` |
-| MinIO | `minio.warehouseBucket` → data-platform warehouse `s3a://<name>`; `logsBucket` and `artifactsBucket` created alongside |
-
-Example (`homelab`):
-
-```
-mise run core:up --env homelab        (homelab-infra)
-        │
-        ├─► helmfile -e homelab
-        │       └─► environments/homelab.yaml
-        │
-        └─► cluster  (MinIO bucket "homelab", …)
-
-mise run spark-app --env homelab …    (data-platform)
-        │
-        ├─► spark_app/config/homelab/global-config.yaml
-        ├─► .env.homelab
-        └─► warehouse s3a://homelab
-```
-
-## Bring up on your cluster
-
-### 1. Kubernetes
-
-Bring your own cluster (k3s, k3d, kind, bare metal). You need `kubectl` via kubeconfig — nothing cluster-specific is committed here.
-
-Recommended: k3s with `--disable traefik` (Traefik comes from the platform stack).
-
-### 2. Environment file
-
-Edit `environments/<env>.yaml` — at minimum `env`, `cluster.storageClass`, `ingress.hostSuffix`, `minio.bucket` (= `env`), and `sizing`. See [environments/example.yaml](environments/example.yaml).
-
-Private env files are gitignored; only `example.yaml` is committed.
-
-### 3. Credentials
-
-Passwords live in `.env` (gitignored) — nothing is committed, no encryption key to keep. `mise run secrets:sync` turns `.env` into Kubernetes Secrets that the charts read by name; `core:up` and `orchestration:up` run it first.
+Then bring up the stacks in tier order:
 
 ```bash
-cp .env.example .env      # then fill in the passwords
+mise run up --stack platform   # tier 0 — namespaces, quotas, Traefik, operators
+mise run up --stack core       # tier 1 — MinIO, PostgreSQL, Polaris
+mise run up --stack orchestration   # tier 2 — Airflow (toggle)
 ```
 
-| Secret | Set from `.env` | Namespaces | Used by |
-|--------|-----------------|------------|---------|
-| `postgres-app` | `POSTGRES_APP_PASSWORD` (user fixed to `app`) | `core`, `orchestration` | Polaris, Airflow, later MLflow |
-| `minio-root` | `MINIO_ROOT_USER` / `_PASSWORD` | `core`, `orchestration` | MinIO, Airflow (remote logs) |
-| `airflow-admin` / `airflow-viewer` | `AIRFLOW_ADMIN_*` / `AIRFLOW_VIEWER_*` | `orchestration` | Airflow web UI (admin + read-only) |
-
-The true PostgreSQL superuser (`postgres`) keeps a random CNPG-generated password, separate from `.env`. Read any secret with `mise run secrets:show <name>` (add `-n <namespace>` if not `core`).
-
-Changing a password: edit `.env`, `mise run secrets:sync`, then re-run the consuming stack's `:up`. PostgreSQL is the exception — its role password is only set at first bootstrap, so `core:down` then `core:up` is needed.
-
-### 4. Deploy stacks
+Tear down a workload and get the memory back; add `--purge` to delete the namespace and its PVCs:
 
 ```bash
-mise run bootstrap
-mise run platform:up --env homelab        # always on — quotas, Traefik, operators
-mise run core:up --env homelab            # always on — MinIO, PostgreSQL, Polaris
-mise run orchestration:up --env homelab   # toggled — Airflow
+mise run down --stack orchestration
+mise run down --stack all          # every tier-2 stack, reverse order (base stays up)
 ```
 
-`mise tasks ls` lists what exists. Stacks that are designed but not written yet have no task.
-
-Tiers, profiles, tear-down, `--purge`, deps, and memory: [docs/architecture/stacks.md](docs/architecture/stacks.md).
-
-### 5. Wire data-platform *(after MVP)*
-
-In [data-platform](https://github.com/revelly-io/data-platform), use the same `--env`. For `homelab`, edit the bundled `spark_app/config/homelab/` and create `.env.homelab` (use `.env.local.example` as a structural reference for k8s endpoints).
-
-```bash
-mise run spark-app --app_name sample.orders_summary --env homelab --ymd 2026-07-14 --hms 100000
-```
-
-Different env name? Copy `spark_app/config/homelab/` → `spark_app/config/<name>/` and add `.env.<name>`.
+Inspect anything: `mise run diff` (what an apply would change), `mise run status` (releases, pods, quota, node memory), `mise run secrets:show <name>`.
 
 ## Layout
 
 ```
 homelab-infra/
-├── mise.toml
-├── helmfile.yaml                 # (MVP)
-├── environments/example.yaml
+├── mise.toml                 # tool versions + task entrypoints
+├── helmfile.yaml             # root: bundles stacks/*
+├── environments/example.yaml # everything cluster-specific
 ├── stacks/
-│   ├── platform/                 # always on — ingress, quotas, every operator
-│   ├── observability/            # always on
-│   ├── core/                     # always on — MinIO, PostgreSQL, Polaris
+│   ├── platform/             # always on — ingress, quotas, every operator
+│   ├── observability/        # always on
+│   ├── core/                 # always on — MinIO, PostgreSQL, Polaris
 │   └── workloads/{orchestration,compute,stream,ml,governance}/   # toggled
 └── docs/architecture/stacks.md
 ```
 
-Each stack folder: `helmfile.yaml`, `values/`, `manifests/`.
+Each stack folder holds `helmfile.yaml`, `values/` and `manifests/`, so it is self-contained.
 
 ## Related
 
-- **[data-platform](https://github.com/revelly-io/data-platform)** — workloads
-- **k8s-infra** — deprecated predecessor
+Workloads — Airflow DAGs, Spark applications, dbt models — live in a separate repo, **data-platform**. This repo is the runtime they run on: it deploys the cluster, data-platform deploys what runs inside it. The boundary is deliberate; a service belongs here, a spec/library/CLI belongs there.

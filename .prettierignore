@@ -1,0 +1,3 @@
+# Minimal ignore list for Prettier. Passed via --ignore-path in `mise run format:docs`
+# so gitignored paths (e.g. work/) can still be formatted locally.
+node_modules
