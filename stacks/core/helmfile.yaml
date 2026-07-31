@@ -49,16 +49,12 @@ releases:
       - values/postgres.yaml.gotmpl
     needs:
       - minio
-    # `wait: true` does nothing for this release. It creates a single CNPG `Cluster`
-    # custom resource, and helm's --wait only watches Deployments, StatefulSets and
-    # Pods the release itself owns — there are none. helm returns in about two
-    # seconds while the operator takes minutes to provision the instance, so
-    # `needs: postgres` on a downstream release means "the CR exists", not "the
-    # database accepts connections". Polaris crash-looped on JDBC errors until
-    # PostgreSQL caught up.
-    #
-    # Waiting on the CR's own Ready condition is what makes `needs:` mean what it
-    # reads like. Anything else fronted by an operator needs the same treatment.
+    # `wait: true` does nothing here: this release only creates a CNPG `Cluster` CR,
+    # and helm's --wait watches Deployments/StatefulSets/Pods the release owns — there
+    # are none. helm returns in ~2s while the operator provisions the DB over minutes,
+    # so `needs: postgres` downstream would mean "the CR exists", not "the DB accepts
+    # connections". The postsync hook waits on the CR's own Ready condition instead;
+    # anything fronted by an operator needs the same.
     hooks:
       - events: ["postsync"]
         showlogs: true

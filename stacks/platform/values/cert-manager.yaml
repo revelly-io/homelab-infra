@@ -4,14 +4,14 @@
 # Certificate and an Issuer unconditionally, and the install fails without the CRDs.
 #
 # It is NOT here for ingress TLS. Every ingress in this repo runs tls.enabled: false;
-# certificates terminate at the Cloudflare edge. See work/decisions/domains-and-tls.md.
+# certificates terminate at the Cloudflare edge.
 #
 # Nothing else to configure: charts that want a certificate ship their own
 # self-signed Issuer, so no ClusterIssuer is defined here.
 
 crds:
   # v1.15+ renamed this from installCRDs. Keeping the CRDs in the release means a
-  # `platform:down` removes them, which is correct — they belong to this stack.
+  # `down --stack platform` removes them, which is correct — they belong to this stack.
   enabled: true
 
 replicaCount: 1

@@ -41,7 +41,8 @@ prometheus:
   podMonitor:
     create: false
 
-# cert-manager is deliberately absent from this cluster; the chart falls back to a
-# self-signed certificate for the webhook.
+# The webhook uses the chart's own self-signed certificate rather than cert-manager.
+# cert-manager is in the cluster (for the Flink operator's webhook), but this webhook
+# has no need of it — one less cross-release dependency.
 certManager:
   enable: false

@@ -8,10 +8,10 @@
 # `needs:` is likewise scoped to a single state file. The entries below run in the
 # order listed with no dependency graph between them, so real bring-up ordering
 # lives in the mise tasks, not here. Do not `helmfile apply` this file expecting
-# tier ordering — use `mise run platform:up`, then `obs:up`, then `core:up`.
+# tier ordering — use `mise run up --stack platform`, then `observability`, then `core`.
 
 # helmfile 1.x requires `environments` to sit in its own YAML document, separated
-# by `---` from the rest. This replaced v0's "double rendering" workaround.
+# from the rest by `---`.
 environments:
   homelab:
     values:

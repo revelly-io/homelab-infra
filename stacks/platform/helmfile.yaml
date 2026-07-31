@@ -19,19 +19,15 @@ environments:
 # Declared per stack, not in the root helmfile: sub-helmfiles do not inherit
 # helmDefaults from the parent.
 #
-# wait: true is what makes `needs:` mean "ready", not merely "installed".
-# timeout is generous because this stack pulls five operator images at once and the
-# link is slow — measured 3-7 minutes per image on first install. At 600 helm gave
-# up while the pulls were still running and marked healthy releases as failed.
+# wait: true is what makes `needs:` mean "ready", not merely "installed". timeout is
+# generous: first install pulls five operator images at once, 3-7 minutes each on a
+# slow link, and a tighter limit marks still-pulling releases as failed.
 helmDefaults:
   createNamespace: false
   wait: true
   timeout: 1200
   atomic: true
 
-# Namespaces must exist before the quotas and limits that live inside them, and all
-# three before any release installs. `kubectl apply -f` honours the given order.
-#
 repositories:
   - name: jetstack
     url: https://charts.jetstack.io
@@ -57,18 +53,10 @@ releases:
     atomic: false
     values:
       - values/cert-manager.yaml
-    # Namespaces must exist before the quotas and limits inside them, and all three
-    # before any release installs — `createNamespace: false` means helm will not
-    # make them. `kubectl apply -f` honours the given order.
-    #
-    # Attached to the first release rather than the state file's own `hooks:`.
-    # Top-level hooks only fire `prepare` and `cleanup` reliably; `prepare` also
-    # runs during `helmfile template`, so the supposedly offline check was creating
-    # namespaces in the cluster, and moving it to a top-level `presync` stopped it
-    # running at all.
-    #
-    # Paths are relative to this file: helmfile runs hook commands with the working
-    # directory set to the directory of the helmfile being processed.
+    # Namespaces, then the quotas and limits inside them, must exist before any
+    # release installs — `createNamespace: false` means helm will not make them.
+    # On the first release's `presync` so it runs once before any install, and not
+    # during `helmfile template`. Paths are relative to this helmfile's directory.
     hooks:
       - events: ["presync"]
         showlogs: true

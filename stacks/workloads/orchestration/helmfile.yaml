@@ -12,8 +12,8 @@ environments:
 # stack and must already be up.
 #
 # Credentials (postgres-app, minio-root, airflow-admin) are created in this
-# namespace by `mise run secrets:sync`, which orchestration:up runs first. No copy
-# hook, no cross-namespace plumbing — the source of truth is .env.
+# namespace by `mise run secrets:sync`, which `up --stack orchestration` runs first.
+# No copy hook, no cross-namespace plumbing — the source of truth is .env.
 #
 # The timeout is longer than platform's because Airflow pulls large images and runs
 # a database migration job before it reports ready.
